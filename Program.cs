@@ -33,8 +33,6 @@ builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics => metrics
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation()
-        .AddRuntimeInstrumentation()
-        .AddProcessInstrumentation()
         .AddOtlpExporter(options => options.Endpoint = new Uri(builder.Configuration["OpenTelemetry:OtlpExporter:Endpoint"] ?? "http://localhost:4317"))
         .AddConsoleExporter());
 
@@ -43,17 +41,20 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// Configure HttpClient for XRPL service
+builder.Services.AddHttpClient("XRPL", client =>
+{
+    client.DefaultRequestHeaders.Add("Accept", "application/json");
+});
+
 // XRPL Services
-builder.Services.AddSingleton<IXRPLService, XRPLService>();
-builder.Services.AddSingleton<IWalletService, WalletService>();
+builder.Services.AddSingleton<IXRPLService, XRPLService>(); // Singleton might be okay if XRPL client is thread-safe
+builder.Services.AddScoped<IWalletService, WalletService>(); // Scoped is generally safer for services that might hold state or use other scoped services
 builder.Services.AddScoped<IPaymentService, PaymentService>();
 
 // Configure MassTransit
 builder.Services.AddMassTransit(x =>
 {
-    // Add OpenTelemetry tracing
-    x.AddOpenTelemetryTracing();
-    
     // Register consumers
     x.AddConsumers(Assembly.GetExecutingAssembly());
 
@@ -66,11 +67,7 @@ builder.Services.AddMassTransit(x =>
         {
             sendCfg.UseExecuteAsync(context =>
             {
-                // Propagate the current activity context
-                if (context.TryGetPayload(out MessageSendContext? sendContext))
-                {
-                    // Logic to propagate trace context
-                }
+                // Simplified context propagation
                 return Task.CompletedTask;
             });
         });

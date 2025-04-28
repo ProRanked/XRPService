@@ -69,10 +69,20 @@ public class PaymentSession
     public string StationId { get; set; } = string.Empty;
     
     /// <summary>
-    /// Payment wallet address
+    /// Payment wallet address (Source address for this session)
     /// </summary>
     public string WalletAddress { get; set; } = string.Empty;
-    
+
+    /// <summary>
+    /// Encrypted seed for the source wallet (temporary session wallet)
+    /// </summary>
+    public string EncryptedSourceWalletSeed { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Destination wallet address (CPO's address)
+    /// </summary>
+    public string DestinationAddress { get; set; } = string.Empty;
+
     /// <summary>
     /// Session start time
     /// </summary>

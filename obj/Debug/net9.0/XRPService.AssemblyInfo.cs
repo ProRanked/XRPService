@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("XRPService")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+13db3bf562015d319dbbb7f470f18202efd92c23")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+0f69cc545fff6ed62e5e121d1febf705faed43af")]
 [assembly: System.Reflection.AssemblyProductAttribute("XRPService")]
 [assembly: System.Reflection.AssemblyTitleAttribute("XRPService")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

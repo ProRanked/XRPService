@@ -1,321 +1,228 @@
-using System.Diagnostics;
-using MassTransit;
+using Microsoft.Extensions.Logging;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace XRPService.Services;
 
-/// <summary>
-/// Implementation of the EV charging payment service using XRP
-/// </summary>
 public class PaymentService : IPaymentService
 {
     private readonly ILogger<PaymentService> _logger;
-    private readonly IXRPLService _xrplService;
     private readonly IWalletService _walletService;
-    private readonly IPublishEndpoint _publishEndpoint;
-    private static readonly ActivitySource _activitySource = new("XRPService.Payments");
-    
-    // In-memory storage for sessions (would be replaced with proper database in production)
-    private readonly Dictionary<string, PaymentSession> _sessions = new();
-    private readonly Dictionary<string, List<PaymentTransaction>> _transactions = new();
-    private readonly Dictionary<string, List<string>> _userSessions = new();
+    private readonly IXRPLService _xrplService;
+    // TODO: Inject database context/repository for storing sessions/transactions
+    // TODO: Inject mechanism to resolve CPO destination address (e.g., IConfiguration, dedicated service)
+    // TODO: Inject encryption service for wallet seeds
+
+    // Temporary in-memory store for sessions - replace with proper persistence
+    private static readonly Dictionary<string, PaymentSession> _paymentSessions = new();
 
     public PaymentService(
         ILogger<PaymentService> logger,
-        IXRPLService xrplService,
         IWalletService walletService,
-        IPublishEndpoint publishEndpoint)
+        IXRPLService xrplService)
     {
         _logger = logger;
-        _xrplService = xrplService;
         _walletService = walletService;
-        _publishEndpoint = publishEndpoint;
+        _xrplService = xrplService;
     }
 
-    /// <inheritdoc/>
-    public async Task<PaymentSession> InitializePaymentSessionAsync(string sessionId, string userId, string stationId)
+    public async Task<PaymentSession> InitializePaymentSessionAsync(string chargingSessionId, string userId, string stationId)
     {
-        using var activity = _activitySource.StartActivity("InitializePaymentSession");
-        activity?.SetTag("session_id", sessionId);
-        activity?.SetTag("user_id", userId);
-        activity?.SetTag("station_id", stationId);
-        
-        try
+        _logger.LogInformation("Initializing payment session for charging session {ChargingSessionId}, Station {StationId}", chargingSessionId, stationId);
+
+        // 1. Generate a new temporary wallet for this session
+        var walletInfo = await _walletService.CreateWalletAsync();
+        if (walletInfo?.Seed == null)
         {
-            _logger.LogInformation("Initializing payment session for charging session {SessionId}", sessionId);
-            
-            // Create a payment session
-            var paymentSession = new PaymentSession
-            {
-                Id = Guid.NewGuid().ToString(),
-                ChargingSessionId = sessionId,
-                UserId = userId,
-                StationId = stationId,
-                StartTime = DateTime.UtcNow,
-                Status = PaymentSessionStatus.Initialized
-            };
-            
-            // Generate or assign a wallet for the session
-            // In production, we would either use the user's wallet or create a temporary one
-            var wallet = await _walletService.CreateWalletAsync();
-            paymentSession.WalletAddress = wallet.Address;
-            
-            // Store in our in-memory repository
-            _sessions[paymentSession.Id] = paymentSession;
-            
-            if (!_userSessions.ContainsKey(userId))
-            {
-                _userSessions[userId] = new List<string>();
-            }
-            _userSessions[userId].Add(paymentSession.Id);
-            
-            // Create an initial transaction record
-            var transaction = new PaymentTransaction
-            {
-                Id = Guid.NewGuid().ToString(),
-                PaymentSessionId = paymentSession.Id,
-                SenderAddress = wallet.Address,
-                ReceiverAddress = "r9cZA1mLK5R5Am25ArfXFmqgNwjZgnfk59", // Example station operator address
-                AmountInXrp = 0, // No initial payment
-                Timestamp = DateTime.UtcNow,
-                Status = PaymentTransactionStatus.Confirmed,
-                Type = PaymentTransactionType.Initialize,
-                Memo = $"Initialization for charging session {sessionId}"
-            };
-            
-            _transactions[paymentSession.Id] = new List<PaymentTransaction> { transaction };
-            
-            // In a real implementation, publish an event for payment session creation
-            // await _publishEndpoint.Publish(new PaymentSessionInitializedEvent { ... });
-            
-            activity?.SetStatus(ActivityStatusCode.Ok);
-            return paymentSession;
+            _logger.LogError("Failed to create wallet for session {ChargingSessionId}", chargingSessionId);
+            throw new InvalidOperationException("Could not create wallet for payment session.");
         }
-        catch (Exception ex)
+        _logger.LogInformation("Created temporary wallet {WalletAddress} for session {ChargingSessionId}", walletInfo.Address, chargingSessionId);
+
+        // 2. TODO: Resolve CPO destination address based on stationId
+        string destinationAddress = "r..."; // Placeholder CPO address
+        _logger.LogInformation("Resolved destination address {DestinationAddress} for station {StationId}", destinationAddress, stationId);
+
+
+        // 3. TODO: Encrypt the wallet seed before storing
+        string encryptedSeed = walletInfo.Seed; // Placeholder - store raw seed temporarily
+        _logger.LogWarning("Storing wallet seed without encryption (placeholder) for session {ChargingSessionId}", chargingSessionId);
+
+
+        // 4. Create and store the payment session details
+        var paymentSession = new PaymentSession
         {
-            _logger.LogError(ex, "Failed to initialize payment session for charging session {SessionId}", sessionId);
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            throw;
-        }
+            Id = Guid.NewGuid().ToString(), // Generate unique ID for this payment session
+            ChargingSessionId = chargingSessionId,
+            UserId = userId,
+            StationId = stationId,
+            WalletAddress = walletInfo.Address, // This is the source wallet
+            EncryptedSourceWalletSeed = encryptedSeed,
+            DestinationAddress = destinationAddress,
+            StartTime = DateTime.UtcNow,
+            Status = PaymentSessionStatus.Initialized
+        };
+
+        // Store session (replace with DB)
+        _paymentSessions[paymentSession.Id] = paymentSession;
+
+        _logger.LogInformation("Payment session {PaymentSessionId} initialized successfully for charging session {ChargingSessionId}", paymentSession.Id, chargingSessionId);
+
+        // Return only non-sensitive info
+        return new PaymentSession
+        {
+            Id = paymentSession.Id,
+            ChargingSessionId = paymentSession.ChargingSessionId,
+            UserId = paymentSession.UserId,
+            StationId = paymentSession.StationId,
+            WalletAddress = paymentSession.WalletAddress, // Return source address
+            DestinationAddress = paymentSession.DestinationAddress,
+            StartTime = paymentSession.StartTime,
+            Status = paymentSession.Status
+            // DO NOT return the seed
+        };
     }
 
-    /// <inheritdoc/>
-    public async Task<PaymentTransaction> ProcessMicropaymentAsync(string sessionId, decimal energyUsed, decimal amountInXrp)
+    public async Task<PaymentTransaction> ProcessMicropaymentAsync(string paymentSessionId, decimal energyUsed, decimal amountInXrp)
     {
-        using var activity = _activitySource.StartActivity("ProcessMicropayment");
-        activity?.SetTag("session_id", sessionId);
-        activity?.SetTag("energy_used", energyUsed);
-        activity?.SetTag("amount_xrp", amountInXrp);
-        
+        _logger.LogInformation("Processing micropayment for session {PaymentSessionId}, Amount: {Amount} XRP", paymentSessionId, amountInXrp);
+
+        // 1. Retrieve the payment session (replace with DB lookup)
+        if (!_paymentSessions.TryGetValue(paymentSessionId, out var session))
+        {
+            _logger.LogError("Payment session {PaymentSessionId} not found for micropayment.", paymentSessionId);
+            throw new KeyNotFoundException($"Payment session {paymentSessionId} not found.");
+        }
+
+        if (session.Status != PaymentSessionStatus.Initialized && session.Status != PaymentSessionStatus.Active)
+        {
+             _logger.LogWarning("Micropayment attempted on session {PaymentSessionId} with status {Status}", paymentSessionId, session.Status);
+             throw new InvalidOperationException($"Payment session {paymentSessionId} is not in an active state ({session.Status}).");
+        }
+
+        // 2. TODO: Decrypt the source wallet seed
+        string sourceWalletSeed = session.EncryptedSourceWalletSeed; // Placeholder
+        if (string.IsNullOrEmpty(sourceWalletSeed))
+        {
+             _logger.LogError("Source wallet seed is missing for session {PaymentSessionId}", paymentSessionId);
+             throw new InvalidOperationException("Cannot process payment: source wallet seed is missing.");
+        }
+
+        // 3. Submit payment to XRPL
+        string transactionHash;
         try
         {
-            _logger.LogInformation("Processing micropayment of {Amount} XRP for {Energy} kWh in session {SessionId}", 
-                amountInXrp, energyUsed, sessionId);
-            
-            // Find the payment session
-            if (!_sessions.TryGetValue(sessionId, out var session))
-            {
-                throw new KeyNotFoundException($"Payment session {sessionId} not found");
-            }
-            
-            if (session.Status != PaymentSessionStatus.Active && session.Status != PaymentSessionStatus.Initialized)
-            {
-                throw new InvalidOperationException($"Payment session {sessionId} is not active");
-            }
-            
-            // Update session status if needed
-            if (session.Status == PaymentSessionStatus.Initialized)
-            {
-                session.Status = PaymentSessionStatus.Active;
-            }
-            
-            // In a real implementation, we would use a wallet seed to sign a transaction
-            // For this skeleton, we'll just simulate a transaction
-            var txHash = await _xrplService.SubmitPaymentAsync(
-                "SEED_PLACEHOLDER", // Would come from secure storage
-                "r9cZA1mLK5R5Am25ArfXFmqgNwjZgnfk59", // Example operator address
+            var memo = $"Phevnix Charge: Session {session.ChargingSessionId}, Energy: {energyUsed}kWh";
+            transactionHash = await _xrplService.SubmitPaymentAsync(
+                sourceWalletSeed,
+                session.DestinationAddress,
                 amountInXrp,
-                $"Payment for {energyUsed} kWh in session {sessionId}");
-            
-            // Create transaction record
-            var transaction = new PaymentTransaction
-            {
-                Id = Guid.NewGuid().ToString(),
-                PaymentSessionId = session.Id,
-                TransactionHash = txHash,
-                SenderAddress = session.WalletAddress,
-                ReceiverAddress = "r9cZA1mLK5R5Am25ArfXFmqgNwjZgnfk59", // Example station operator address
-                AmountInXrp = amountInXrp,
-                EnergyAmount = energyUsed,
-                Timestamp = DateTime.UtcNow,
-                Status = PaymentTransactionStatus.Confirmed, // In reality, would start as Pending
-                Type = PaymentTransactionType.Micropayment,
-                Memo = $"Payment for {energyUsed} kWh in session {sessionId}"
-            };
-            
-            // Update session info
-            session.TotalEnergyUsed += energyUsed;
-            session.TotalAmountPaid += amountInXrp;
-            session.TransactionHashes.Add(txHash);
-            
-            // Store transaction
-            _transactions[session.Id].Add(transaction);
-            
-            // In a real implementation, publish event for micropayment
-            // await _publishEndpoint.Publish(new MicropaymentProcessedEvent { ... });
-            
-            activity?.SetStatus(ActivityStatusCode.Ok);
-            activity?.SetTag("transaction_hash", txHash);
-            return transaction;
+                memo);
+
+             _logger.LogInformation("Submitted micropayment transaction {TransactionHash} for session {PaymentSessionId}", transactionHash, paymentSessionId);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to process micropayment for session {SessionId}", sessionId);
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            throw;
+            _logger.LogError(ex, "Failed to submit micropayment transaction for session {PaymentSessionId}", paymentSessionId);
+            // TODO: Handle specific XRPL exceptions, update session status?
+            throw; // Re-throw for now
         }
+
+        // 4. Create and store transaction record (replace with DB)
+        var transaction = new PaymentTransaction
+        {
+            Id = Guid.NewGuid().ToString(),
+            PaymentSessionId = paymentSessionId,
+            TransactionHash = transactionHash,
+            SenderAddress = session.WalletAddress,
+            ReceiverAddress = session.DestinationAddress,
+            AmountInXrp = amountInXrp,
+            EnergyAmount = energyUsed, // Store energy associated with this specific payment
+            Timestamp = DateTime.UtcNow,
+            Status = PaymentTransactionStatus.Pending, // TODO: Update status based on XRPL confirmation (async?)
+            Type = PaymentTransactionType.Micropayment,
+            Memo = $"Energy: {energyUsed}kWh"
+        };
+        // TODO: Store transaction in DB
+
+        // 5. Update session state (replace with DB update)
+        session.Status = PaymentSessionStatus.Active;
+        session.TotalAmountPaid += amountInXrp;
+        session.TotalEnergyUsed += energyUsed; // Accumulate energy for the session
+        session.TransactionHashes.Add(transactionHash);
+        _paymentSessions[paymentSessionId] = session; // Update in-memory store
+
+        _logger.LogInformation("Micropayment processed for session {PaymentSessionId}. Transaction: {TransactionHash}", paymentSessionId, transactionHash);
+
+        // TODO: Publish PaymentConfirmedEvent via MassTransit
+
+        return transaction; // Return details of this specific transaction
     }
 
-    /// <inheritdoc/>
-    public async Task<PaymentSession> FinalizePaymentSessionAsync(string sessionId, decimal totalEnergyUsed, decimal totalAmountInXrp)
+    public async Task<PaymentSession> FinalizePaymentSessionAsync(string paymentSessionId, decimal totalEnergyUsed, decimal totalAmountInXrp)
     {
-        using var activity = _activitySource.StartActivity("FinalizePaymentSession");
-        activity?.SetTag("session_id", sessionId);
-        activity?.SetTag("total_energy", totalEnergyUsed);
-        activity?.SetTag("total_amount", totalAmountInXrp);
-        
-        try
+        _logger.LogInformation("Finalizing payment session {PaymentSessionId}", paymentSessionId);
+
+        // 1. Retrieve the payment session (replace with DB lookup)
+         if (!_paymentSessions.TryGetValue(paymentSessionId, out var session))
         {
-            _logger.LogInformation("Finalizing payment session {SessionId} with total {Energy} kWh and {Amount} XRP", 
-                sessionId, totalEnergyUsed, totalAmountInXrp);
-            
-            // Find the payment session
-            if (!_sessions.TryGetValue(sessionId, out var session))
-            {
-                throw new KeyNotFoundException($"Payment session {sessionId} not found");
-            }
-            
-            if (session.Status == PaymentSessionStatus.Completed)
-            {
-                _logger.LogWarning("Payment session {SessionId} already finalized", sessionId);
-                return session;
-            }
-            
-            // Calculate any remaining payment needed
-            var remainingPayment = totalAmountInXrp - session.TotalAmountPaid;
-            string? txHash = null;
-            
-            if (remainingPayment > 0)
-            {
-                // Process final payment
-                txHash = await _xrplService.SubmitPaymentAsync(
-                    "SEED_PLACEHOLDER", // Would come from secure storage
-                    "r9cZA1mLK5R5Am25ArfXFmqgNwjZgnfk59", // Example operator address
-                    remainingPayment,
-                    $"Final payment for session {sessionId}");
-                
-                // Create transaction record for final payment
-                var transaction = new PaymentTransaction
-                {
-                    Id = Guid.NewGuid().ToString(),
-                    PaymentSessionId = session.Id,
-                    TransactionHash = txHash,
-                    SenderAddress = session.WalletAddress,
-                    ReceiverAddress = "r9cZA1mLK5R5Am25ArfXFmqgNwjZgnfk59",
-                    AmountInXrp = remainingPayment,
-                    EnergyAmount = totalEnergyUsed - session.TotalEnergyUsed,
-                    Timestamp = DateTime.UtcNow,
-                    Status = PaymentTransactionStatus.Confirmed,
-                    Type = PaymentTransactionType.Finalize,
-                    Memo = $"Final payment for session {sessionId}"
-                };
-                
-                _transactions[session.Id].Add(transaction);
-                
-                if (txHash != null)
-                {
-                    session.TransactionHashes.Add(txHash);
-                }
-            }
-            
-            // Update session to finalized state
-            session.EndTime = DateTime.UtcNow;
-            session.TotalEnergyUsed = totalEnergyUsed;
-            session.TotalAmountPaid = totalAmountInXrp;
-            session.Status = PaymentSessionStatus.Completed;
-            
-            // In a real implementation, publish event for session finalization
-            // await _publishEndpoint.Publish(new PaymentSessionFinalizedEvent { ... });
-            
-            activity?.SetStatus(ActivityStatusCode.Ok);
-            if (txHash != null)
-            {
-                activity?.SetTag("final_transaction_hash", txHash);
-            }
-            
-            return session;
+            _logger.LogError("Payment session {PaymentSessionId} not found for finalization.", paymentSessionId);
+            throw new KeyNotFoundException($"Payment session {paymentSessionId} not found.");
         }
-        catch (Exception ex)
+
+        if (session.Status == PaymentSessionStatus.Completed || session.Status == PaymentSessionStatus.Failed || session.Status == PaymentSessionStatus.Cancelled)
         {
-            _logger.LogError(ex, "Failed to finalize payment session {SessionId}", sessionId);
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            throw;
+             _logger.LogWarning("Finalization attempted on already finalized session {PaymentSessionId} with status {Status}", paymentSessionId, session.Status);
+             return session; // Or throw error? Return current state for now.
         }
+
+        // 2. TODO: Perform final checks/calculations if needed (e.g., compare totalAmountInXrp with session.TotalAmountPaid)
+        _logger.LogInformation("Session {PaymentSessionId} finalization check. Reported Total XRP: {ReportedTotal}, Calculated Total XRP: {CalculatedTotal}",
+            paymentSessionId, totalAmountInXrp, session.TotalAmountPaid);
+
+        // 3. Update session state (replace with DB update)
+        session.EndTime = DateTime.UtcNow;
+        session.Status = PaymentSessionStatus.Completed; // Assuming successful finalization
+        session.TotalEnergyUsed = totalEnergyUsed; // Update with final reported energy
+        // Potentially adjust session.TotalAmountPaid based on final calculation or reconciliation
+        _paymentSessions[paymentSessionId] = session; // Update in-memory store
+
+        // 4. TODO: Consider archiving or securely deleting the temporary wallet seed now that the session is complete.
+
+        _logger.LogInformation("Payment session {PaymentSessionId} finalized successfully.", paymentSessionId);
+
+        // TODO: Publish SessionFinalizedEvent via MassTransit
+
+        // Return the final state of the session (without sensitive info)
+         return new PaymentSession
+        {
+            Id = session.Id,
+            ChargingSessionId = session.ChargingSessionId,
+            UserId = session.UserId,
+            StationId = session.StationId,
+            WalletAddress = session.WalletAddress,
+            DestinationAddress = session.DestinationAddress,
+            StartTime = session.StartTime,
+            EndTime = session.EndTime,
+            Status = session.Status,
+            TotalAmountPaid = session.TotalAmountPaid,
+            TotalEnergyUsed = session.TotalEnergyUsed,
+            TransactionHashes = session.TransactionHashes
+            // DO NOT return the seed
+        };
     }
 
-    /// <inheritdoc/>
-    public async Task<IEnumerable<PaymentTransaction>> GetPaymentHistoryAsync(string userId, DateTime? fromDate = null, DateTime? toDate = null, int limit = 50)
+    public Task<IEnumerable<PaymentTransaction>> GetPaymentHistoryAsync(string userId, DateTime? fromDate = null, DateTime? toDate = null, int limit = 50)
     {
-        using var activity = _activitySource.StartActivity("GetPaymentHistory");
-        activity?.SetTag("user_id", userId);
-        
-        try
-        {
-            _logger.LogInformation("Getting payment history for user {UserId}", userId);
-            
-            if (!_userSessions.TryGetValue(userId, out var sessionIds))
-            {
-                return Enumerable.Empty<PaymentTransaction>();
-            }
-            
-            var allTransactions = new List<PaymentTransaction>();
-            
-            foreach (var sessionId in sessionIds)
-            {
-                if (_transactions.TryGetValue(sessionId, out var sessionTransactions))
-                {
-                    allTransactions.AddRange(sessionTransactions);
-                }
-            }
-            
-            // Apply date filters if provided
-            var filteredTransactions = allTransactions.AsEnumerable();
-            
-            if (fromDate.HasValue)
-            {
-                filteredTransactions = filteredTransactions.Where(t => t.Timestamp >= fromDate.Value);
-            }
-            
-            if (toDate.HasValue)
-            {
-                filteredTransactions = filteredTransactions.Where(t => t.Timestamp <= toDate.Value);
-            }
-            
-            // Sort by timestamp descending and take the specified limit
-            var result = filteredTransactions
-                .OrderByDescending(t => t.Timestamp)
-                .Take(limit)
-                .ToList();
-            
-            activity?.SetStatus(ActivityStatusCode.Ok);
-            activity?.SetTag("transaction_count", result.Count);
-            
-            return result;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to get payment history for user {UserId}", userId);
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            throw;
-        }
+        _logger.LogInformation("Getting payment history for user {UserId}", userId);
+        // TODO: Implement actual database query based on userId and filters
+        // Temporary placeholder returning all transactions for the user from memory
+        var userSessions = _paymentSessions.Values.Where(s => s.UserId == userId).Select(s => s.Id).ToList();
+        // This requires storing transactions separately or querying them based on session IDs
+        // Returning empty list as placeholder
+        IEnumerable<PaymentTransaction> history = new List<PaymentTransaction>();
+        return Task.FromResult(history);
     }
 }
