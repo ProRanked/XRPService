@@ -1,0 +1,62 @@
+sequenceDiagram
+    participant CPO as CPOService/EVSEService
+    participant LB as LoadBalancer
+    participant API as XRPService (API)
+    participant Bus as XRPService (Bus)
+    participant Payment as PaymentService
+    participant Wallet as WalletService
+    participant XRPL as XRPLService
+    participant Ledger as XRP Ledger
+    participant Other as Other Services
+
+    Note over CPO, API: Charging Session Starts
+    CPO->>LB: Request Start Charging (UserId, StationId)
+    LB->>API: POST /api/payments/sessions
+    API->>Payment: InitializePaymentSessionAsync()
+    Payment->>Wallet: CreateWalletAsync()
+    Wallet-->>Payment: WalletInfo (Address, Seed)
+    Payment->>Other: Get CPO Destination Address
+    Other-->>Payment: CPO Destination Address
+    Payment->>Payment: Store PaymentSession
+    Payment-->>API: PaymentSession (Id, Address)
+    API-->>LB: 200 OK (Response)
+    LB-->>CPO: Session Info
+
+    Note over CPO, Bus: During Charging (Micropayments)
+    CPO->>Bus: Publish EnergyUpdateEvent
+    Bus->>Payment: Handle(EnergyUpdateEvent)
+    Payment->>Payment: Calculate XRP Amount
+    Payment->>Payment: Retrieve Session Data
+    Payment->>XRPL: SubmitPaymentAsync()
+    XRPL->>Ledger: Submit Transaction
+    Ledger-->>XRPL: Transaction Hash/Status
+    XRPL-->>Payment: Transaction Result
+    alt Transaction Successful
+        Payment->>Payment: Store PaymentTransaction (Confirmed)
+        Payment->>Payment: Update PaymentSession
+        Payment->>Bus: Publish PaymentConfirmedEvent
+        Bus-->>Other: Notify Payment
+    else Transaction Failed
+        Payment->>Payment: Store PaymentTransaction (Failed)
+        Payment->>Bus: Publish PaymentFailedEvent
+        Bus-->>Other: Notify Failure
+    end
+    Payment-->>Bus: Acknowledge Message
+
+    Note over CPO, API: Charging Session Ends
+    CPO->>LB: Request Stop Charging
+    LB->>API: POST /api/payments/sessions/{id}/finalize
+    API->>Payment: FinalizePaymentSessionAsync()
+    Payment->>Payment: Perform final calculation
+    Payment->>Payment: Retrieve Session Data
+    opt Final Payment Needed
+        Payment->>XRPL: SubmitPaymentAsync()
+        XRPL-->>Payment: Final Transaction Result
+        Payment->>Payment: Store Final Transaction
+    end
+    Payment->>Payment: Update PaymentSession (Completed)
+    Payment->>Bus: Publish SessionFinalizedEvent
+    Bus-->>Other: Notify Finalization
+    Payment-->>API: Finalized PaymentSession
+    API-->>LB: 200 OK (Response)
+    LB-->>CPO: Final Session Status
