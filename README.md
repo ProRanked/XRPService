@@ -16,6 +16,8 @@ XRPService is a microservice that enables XRP Ledger (XRPL) integration for EV c
 - **Blockchain Integration**: Connect with the XRP Ledger for transaction processing
 - **Transaction History**: Track and retrieve payment history for users
 - **Distributed Tracing**: OpenTelemetry integration for monitoring payment flows
+- **Event-Based Messaging**: MassTransit integration for asynchronous processing
+- **Dockerization**: Containerized deployment with Ubuntu-based image
 
 ## Architecture
 
@@ -67,11 +69,17 @@ dotnet run --project XRPService
 
 ### API Endpoints
 
+#### Payment Endpoints
 - **POST /api/payments/sessions**: Initialize a payment session
 - **POST /api/payments/micropayments**: Process a micropayment
 - **POST /api/payments/sessions/{id}/finalize**: Finalize a payment session
 - **GET /api/payments/history/{userId}**: Get payment history for a user
 - **GET /api/payments/wallets/{address}**: Get wallet information
+
+#### Wallet Endpoints
+- **POST /api/wallets**: Create a new XRP wallet
+- **GET /api/wallets/{address}**: Get wallet information
+- **POST /api/wallets/{address}/fund**: Fund a test wallet (testnet/devnet only)
 
 ## Integration
 
@@ -85,10 +93,23 @@ This service integrates with:
 
 ### Key Components
 
-- **IXRPLService**: Interface for XRP Ledger interactions
-- **IWalletService**: Interface for wallet management
-- **IPaymentService**: Interface for payment processing
-- **PaymentsEndpoints**: API endpoints for payment operations
+- **Services**:
+  - **IXRPLService**: Interface for XRP Ledger interactions
+  - **IWalletService**: Interface for wallet management
+  - **IPaymentService**: Interface for payment processing
+  
+- **API Endpoints**:
+  - **PaymentsEndpoints**: API endpoints for payment operations
+  - **WalletEndpoints**: API endpoints for wallet management
+  
+- **Event System**:
+  - **EnergyUpdateEvent**: Triggered when energy consumption is updated
+  - **PaymentConfirmedEvent**: Triggered when a payment is confirmed
+  - **PaymentFailedEvent**: Triggered when a payment fails
+  - **SessionFinalizedEvent**: Triggered when a charging session is completed
+  
+- **Consumers**:
+  - **EnergyUpdateConsumer**: Handles energy updates and triggers micropayments
 
 ### Testing
 
@@ -101,6 +122,20 @@ Test projects are organized to mirror the service structure, focusing on:
 ## Deployment
 
 The service is deployed as a Docker container in Kubernetes, similar to other services in the system.
+
+### Docker Deployment
+
+Build and run the Docker container:
+
+```bash
+# Build the Docker image
+docker build -t xrpservice:latest .
+
+# Run the container
+docker run -d -p 8080:80 --name xrpservice xrpservice:latest
+```
+
+The service uses an Ubuntu-based container with .NET 9.0 runtime.
 
 ## Learn More
 
