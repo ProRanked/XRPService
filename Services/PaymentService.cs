@@ -1,8 +1,11 @@
+using MassTransit;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
+using XRPService.Events;
 
 namespace XRPService.Services;
 
@@ -11,21 +14,27 @@ public class PaymentService : IPaymentService
     private readonly ILogger<PaymentService> _logger;
     private readonly IWalletService _walletService;
     private readonly IXRPLService _xrplService;
+    private readonly IBus _bus;
+    private static readonly ActivitySource _activitySource = new("XRPService.Payments");
     // TODO: Inject database context/repository for storing sessions/transactions
     // TODO: Inject mechanism to resolve CPO destination address (e.g., IConfiguration, dedicated service)
     // TODO: Inject encryption service for wallet seeds
 
     // Temporary in-memory store for sessions - replace with proper persistence
     private static readonly Dictionary<string, PaymentSession> _paymentSessions = new();
+    // Temporary in-memory store for transactions - replace with proper persistence
+    private static readonly List<PaymentTransaction> _paymentTransactions = new();
 
     public PaymentService(
         ILogger<PaymentService> logger,
         IWalletService walletService,
-        IXRPLService xrplService)
+        IXRPLService xrplService,
+        IBus bus)
     {
         _logger = logger;
         _walletService = walletService;
         _xrplService = xrplService;
+        _bus = bus;
     }
 
     public async Task<PaymentSession> InitializePaymentSessionAsync(string chargingSessionId, string userId, string stationId)
@@ -141,11 +150,13 @@ public class PaymentService : IPaymentService
             AmountInXrp = amountInXrp,
             EnergyAmount = energyUsed, // Store energy associated with this specific payment
             Timestamp = DateTime.UtcNow,
-            Status = PaymentTransactionStatus.Pending, // TODO: Update status based on XRPL confirmation (async?)
+            Status = PaymentTransactionStatus.Confirmed, // Assuming transaction is immediately confirmed for now
             Type = PaymentTransactionType.Micropayment,
             Memo = $"Energy: {energyUsed}kWh"
         };
-        // TODO: Store transaction in DB
+        
+        // Store transaction in memory (replace with DB)
+        _paymentTransactions.Add(transaction);
 
         // 5. Update session state (replace with DB update)
         session.Status = PaymentSessionStatus.Active;
@@ -156,7 +167,33 @@ public class PaymentService : IPaymentService
 
         _logger.LogInformation("Micropayment processed for session {PaymentSessionId}. Transaction: {TransactionHash}", paymentSessionId, transactionHash);
 
-        // TODO: Publish PaymentConfirmedEvent via MassTransit
+        // Publish PaymentConfirmedEvent
+        try
+        {
+            var paymentConfirmedEvent = new PaymentConfirmedEvent
+            {
+                PaymentSessionId = paymentSessionId,
+                ChargingSessionId = session.ChargingSessionId,
+                UserId = session.UserId,
+                StationId = session.StationId,
+                TransactionId = transaction.Id,
+                TransactionHash = transaction.TransactionHash,
+                AmountInXrp = transaction.AmountInXrp,
+                EnergyAmount = transaction.EnergyAmount,
+                TotalEnergyUsed = session.TotalEnergyUsed,
+                TotalAmountPaid = session.TotalAmountPaid,
+                TransactionType = transaction.Type,
+                Timestamp = transaction.Timestamp
+            };
+
+            _logger.LogInformation("Publishing PaymentConfirmedEvent for transaction {TransactionId}", transaction.Id);
+            await _bus.Publish(paymentConfirmedEvent);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to publish PaymentConfirmedEvent for transaction {TransactionId}", transaction.Id);
+            // Continue execution - don't let the event publishing failure affect the API response
+        }
 
         return transaction; // Return details of this specific transaction
     }
@@ -193,10 +230,35 @@ public class PaymentService : IPaymentService
 
         _logger.LogInformation("Payment session {PaymentSessionId} finalized successfully.", paymentSessionId);
 
-        // TODO: Publish SessionFinalizedEvent via MassTransit
+        // Publish SessionFinalizedEvent
+        try
+        {
+            var sessionFinalizedEvent = new SessionFinalizedEvent
+            {
+                PaymentSessionId = session.Id,
+                ChargingSessionId = session.ChargingSessionId,
+                UserId = session.UserId,
+                StationId = session.StationId,
+                TotalEnergyUsed = session.TotalEnergyUsed,
+                TotalAmountPaid = session.TotalAmountPaid,
+                StartTime = session.StartTime,
+                EndTime = session.EndTime.Value,
+                Status = session.Status,
+                TransactionHashes = session.TransactionHashes,
+                Timestamp = DateTime.UtcNow
+            };
+
+            _logger.LogInformation("Publishing SessionFinalizedEvent for session {SessionId}", session.Id);
+            await _bus.Publish(sessionFinalizedEvent);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to publish SessionFinalizedEvent for session {SessionId}", session.Id);
+            // Continue execution - don't let the event publishing failure affect the API response
+        }
 
         // Return the final state of the session (without sensitive info)
-         return new PaymentSession
+        return new PaymentSession
         {
             Id = session.Id,
             ChargingSessionId = session.ChargingSessionId,
@@ -216,13 +278,38 @@ public class PaymentService : IPaymentService
 
     public Task<IEnumerable<PaymentTransaction>> GetPaymentHistoryAsync(string userId, DateTime? fromDate = null, DateTime? toDate = null, int limit = 50)
     {
+        using var activity = _activitySource.StartActivity("GetPaymentHistory");
+        activity?.SetTag("user_id", userId);
+        activity?.SetTag("limit", limit);
+        if (fromDate.HasValue) activity?.SetTag("from_date", fromDate.Value.ToString("o"));
+        if (toDate.HasValue) activity?.SetTag("to_date", toDate.Value.ToString("o"));
+
         _logger.LogInformation("Getting payment history for user {UserId}", userId);
-        // TODO: Implement actual database query based on userId and filters
-        // Temporary placeholder returning all transactions for the user from memory
-        var userSessions = _paymentSessions.Values.Where(s => s.UserId == userId).Select(s => s.Id).ToList();
-        // This requires storing transactions separately or querying them based on session IDs
-        // Returning empty list as placeholder
-        IEnumerable<PaymentTransaction> history = new List<PaymentTransaction>();
-        return Task.FromResult(history);
+        
+        // Get session IDs for this user
+        var userSessionIds = _paymentSessions.Values
+            .Where(s => s.UserId == userId)
+            .Select(s => s.Id)
+            .ToList();
+        
+        // Filter transactions by user's sessions, date range, and limit
+        var query = _paymentTransactions
+            .Where(t => userSessionIds.Contains(t.PaymentSessionId));
+            
+        if (fromDate.HasValue)
+            query = query.Where(t => t.Timestamp >= fromDate.Value);
+            
+        if (toDate.HasValue)
+            query = query.Where(t => t.Timestamp <= toDate.Value);
+            
+        var history = query
+            .OrderByDescending(t => t.Timestamp)
+            .Take(limit)
+            .ToList();
+            
+        _logger.LogInformation("Found {Count} transactions for user {UserId}", history.Count, userId);
+        activity?.SetStatus(ActivityStatusCode.Ok);
+        
+        return Task.FromResult(history.AsEnumerable());
     }
 }

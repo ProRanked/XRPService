@@ -4,6 +4,8 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using System.Reflection;
+using XRPService.Consumers;
+using XRPService.Events;
 using XRPService.Features.Payments;
 using XRPService.Features.Wallets;
 using XRPService.Services;
@@ -92,7 +94,10 @@ void ConfigureMassTransit(IServiceCollection services, IConfiguration configurat
 {
     services.AddMassTransit(x =>
     {
-        // Register consumers
+        // Register specific consumers
+        x.AddConsumer<EnergyUpdateConsumer>();
+        
+        // Register all consumers in the assembly
         x.AddConsumers(Assembly.GetExecutingAssembly());
 
         x.UsingAzureServiceBus((context, cfg) =>
@@ -104,6 +109,12 @@ void ConfigureMassTransit(IServiceCollection services, IConfiguration configurat
             {
                 sendCfg.UseExecuteAsync(_ => Task.CompletedTask);
             });
+            
+            // Configure message types
+            cfg.Message<EnergyUpdateEvent>(m => m.SetEntityName("energy-updates"));
+            cfg.Message<PaymentConfirmedEvent>(m => m.SetEntityName("payment-confirmations"));
+            cfg.Message<PaymentFailedEvent>(m => m.SetEntityName("payment-failures"));
+            cfg.Message<SessionFinalizedEvent>(m => m.SetEntityName("session-finalizations"));
             
             // Configure endpoint naming with instance ID
             cfg.ConfigureEndpoints(context, 
