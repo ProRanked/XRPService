@@ -30,7 +30,7 @@ The service follows the same architectural patterns as other microservices in th
 
 This diagram illustrates the typical payment session lifecycle involving XRPService and other components:
 
-![Workflow Diagram](xrp-workflow-diagram.png)
+![Workflow Diagram](Docs/xrp-workflow-diagram.png)
 
 <!-- Mermaid diagram removed; see xrp-workflow-diagram.png -->
 

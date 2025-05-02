@@ -5,87 +5,21 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using System.Reflection;
 using XRPService.Features.Payments;
+using XRPService.Features.Wallets;
 using XRPService.Services;
 
 var builder = WebApplication.CreateBuilder(args);
-
-// Generate unique instance ID for this service instance
-var instanceId = Guid.NewGuid().ToString("N").Substring(0, 8);
+var instanceId = Guid.NewGuid().ToString("N")[..8];
 Console.WriteLine($"Starting XRPService with instance ID: {instanceId}");
 
-// Add OpenTelemetry
-builder.Services.AddOpenTelemetry()
-    .ConfigureResource(resource => resource
-        .AddService("XRPService")
-        .AddAttributes(new Dictionary<string, object>
-        {
-            ["deployment.environment"] = builder.Environment.EnvironmentName,
-            ["service.instance.id"] = instanceId
-        }))
-    .WithTracing(tracing => tracing
-        .AddSource("XRPService")
-        .AddSource("XRPService.Payments")
-        .AddSource("XRPService.MassTransit")
-        .AddAspNetCoreInstrumentation()
-        .AddHttpClientInstrumentation()
-        .AddOtlpExporter(options => options.Endpoint = new Uri(builder.Configuration["OpenTelemetry:OtlpExporter:Endpoint"] ?? "http://localhost:4317"))
-        .AddConsoleExporter())
-    .WithMetrics(metrics => metrics
-        .AddAspNetCoreInstrumentation()
-        .AddHttpClientInstrumentation()
-        .AddOtlpExporter(options => options.Endpoint = new Uri(builder.Configuration["OpenTelemetry:OtlpExporter:Endpoint"] ?? "http://localhost:4317"))
-        .AddConsoleExporter());
-
-// Add services
-builder.Services.AddControllers();
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
-
-// Configure HttpClient for XRPL service
-builder.Services.AddHttpClient("XRPL", client =>
-{
-    client.DefaultRequestHeaders.Add("Accept", "application/json");
-});
-
-// XRPL Services
-builder.Services.AddSingleton<IXRPLService, XRPLService>(); // Singleton might be okay if XRPL client is thread-safe
-builder.Services.AddScoped<IWalletService, WalletService>(); // Scoped is generally safer for services that might hold state or use other scoped services
-builder.Services.AddScoped<IPaymentService, PaymentService>();
-
-// Configure MassTransit
-builder.Services.AddMassTransit(x =>
-{
-    // Register consumers
-    x.AddConsumers(Assembly.GetExecutingAssembly());
-
-    x.UsingAzureServiceBus((context, cfg) =>
-    {
-        cfg.Host(builder.Configuration.GetConnectionString("ServiceBus"));
-        
-        // Add middleware to propagate activity context
-        cfg.ConfigureSend(sendCfg =>
-        {
-            sendCfg.UseExecuteAsync(context =>
-            {
-                // Simplified context propagation
-                return Task.CompletedTask;
-            });
-        });
-        
-        // Configure endpoint naming with instance ID
-        cfg.ConfigureEndpoints(context, 
-            new DefaultEndpointNameFormatter($"xrp-{instanceId}-", false));
-    });
-});
-
-// Health checks
-builder.Services.AddHealthChecks()
-    .AddCheck("self", () => HealthCheckResult.Healthy())
-    .AddCheck("xrpledger", () => HealthCheckResult.Healthy());
+// Configure services
+ConfigureOpenTelemetry(builder.Services, builder.Environment.EnvironmentName, instanceId, builder.Configuration);
+ConfigureServices(builder.Services);
+ConfigureMassTransit(builder.Services, builder.Configuration, instanceId);
 
 var app = builder.Build();
 
-// Configure middleware
+// Configure middleware pipeline
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -95,10 +29,85 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseAuthorization();
 
+// Map endpoints
 app.MapControllers();
 app.MapPaymentEndpoints();
-
-// Health check endpoint
+app.MapWalletEndpoints();
 app.MapHealthChecks("/health");
 
 app.Run();
+
+// Configuration methods
+void ConfigureOpenTelemetry(IServiceCollection services, string environmentName, string serviceInstanceId, IConfiguration configuration)
+{
+    services.AddOpenTelemetry()
+        .ConfigureResource(resource => resource
+            .AddService("XRPService")
+            .AddAttributes(new Dictionary<string, object>
+            {
+                ["deployment.environment"] = environmentName,
+                ["service.instance.id"] = serviceInstanceId
+            }))
+        .WithTracing(tracing => tracing
+            .AddSource("XRPService")
+            .AddSource("XRPService.Payments")
+            .AddSource("XRPService.Wallets")
+            .AddSource("XRPService.MassTransit")
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddOtlpExporter(options => options.Endpoint = new Uri(
+                configuration["OpenTelemetry:OtlpExporter:Endpoint"] ?? "http://localhost:4317"))
+            .AddConsoleExporter())
+        .WithMetrics(metrics => metrics
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddOtlpExporter(options => options.Endpoint = new Uri(
+                configuration["OpenTelemetry:OtlpExporter:Endpoint"] ?? "http://localhost:4317"))
+            .AddConsoleExporter());
+}
+
+void ConfigureServices(IServiceCollection services)
+{
+    // API and documentation
+    services.AddControllers();
+    services.AddEndpointsApiExplorer();
+    services.AddSwaggerGen();
+    
+    // HttpClient for XRPL
+    services.AddHttpClient("XRPL", client => 
+        client.DefaultRequestHeaders.Add("Accept", "application/json"));
+    
+    // XRPL Services
+    services.AddSingleton<IXRPLService, XRPLService>();
+    services.AddScoped<IWalletService, WalletService>();
+    services.AddScoped<IPaymentService, PaymentService>();
+    
+    // Health checks
+    services.AddHealthChecks()
+        .AddCheck("self", () => HealthCheckResult.Healthy())
+        .AddCheck("xrpledger", () => HealthCheckResult.Healthy());
+}
+
+void ConfigureMassTransit(IServiceCollection services, IConfiguration configuration, string serviceInstanceId)
+{
+    services.AddMassTransit(x =>
+    {
+        // Register consumers
+        x.AddConsumers(Assembly.GetExecutingAssembly());
+
+        x.UsingAzureServiceBus((context, cfg) =>
+        {
+            cfg.Host(configuration.GetConnectionString("ServiceBus"));
+            
+            // Add middleware to propagate activity context
+            cfg.ConfigureSend(sendCfg =>
+            {
+                sendCfg.UseExecuteAsync(_ => Task.CompletedTask);
+            });
+            
+            // Configure endpoint naming with instance ID
+            cfg.ConfigureEndpoints(context, 
+                new DefaultEndpointNameFormatter($"xrp-{serviceInstanceId}-", false));
+        });
+    });
+}
